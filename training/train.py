@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader, SubsetRandomSampler
 import time
 import os
 import sys
@@ -15,58 +16,210 @@ from nnue_model import SimpleNNUE
 from dataset import create_dataloader
 
 
-def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch):
-    """Train for one epoch"""
+class OrderedSampler(torch.utils.data.Sampler):
+    """Sampler that yields indices in the provided order."""
+    def __init__(self, indices):
+        self.indices = list(indices)
+
+    def __iter__(self):
+        return iter(self.indices)
+
+    def __len__(self):
+        return len(self.indices)
+
+
+def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, shuffle_chunks=False, shuffle_within_chunk=False):
+    """Train for one epoch.
+
+    If the provided DataLoader wraps a streaming dataset (Subset over a
+    streaming LichessEvalDatasetStreaming with `buffer_lines` set), iterate
+    chunk-by-chunk to preserve locality: for each chunk create a temporary
+    DataLoader (SubsetRandomSampler) that yields indices inside that chunk
+    sequentially (optionally shuffled within-chunk). This keeps each chunk
+    resident in the dataset buffer while its samples are consumed and avoids
+    repeated chunk load/unload thrash.
+    """
     model.train()
     total_loss = 0.0
     num_batches = 0
-    
-    for batch_idx, (features, targets) in enumerate(train_loader):
-        features = features.to(device)
-        targets = targets.to(device)
-        
-        # Forward pass
-        predictions = model(features)
-        loss = loss_fn(predictions, targets)
-        
-        # Backward pass
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        
-        # Gradient clipping for stability
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        # Update weights
-        optimizer.step()
-        
-        total_loss += loss.item()
-        num_batches += 1
-        
-        if (batch_idx + 1) % 100 == 0:
-            avg_loss = total_loss / num_batches
-            print(f"  Batch {batch_idx + 1}/{len(train_loader)}: Loss = {avg_loss:.4f}")
-    
-    return total_loss / num_batches
+
+    # Detect if train_loader.dataset is a Subset wrapping the original dataset
+    ds_wrapper = getattr(train_loader, 'dataset', None)
+    orig_dataset = getattr(ds_wrapper, 'dataset', None)
+    indices = getattr(ds_wrapper, 'indices', None)
+
+    # If we have a streaming dataset with buffer_lines configured, do chunked iteration
+    if orig_dataset is not None and getattr(orig_dataset, 'buffer_lines', None):
+        buffer_lines = orig_dataset.buffer_lines
+
+        # Group training indices by chunk id
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for idx in indices:
+            chunk_id = idx // buffer_lines
+            groups[chunk_id].append(idx)
+
+        # Determine chunk order. By default do NOT shuffle chunks to preserve
+        # streaming locality; set shuffle_chunks=True to randomize chunk order.
+        import random
+        if shuffle_chunks:
+            chunk_order = list(groups.keys())
+            random.shuffle(chunk_order)
+        else:
+            # Use sorted chunk order to ensure sequential/monotonic access
+            chunk_order = sorted(groups.keys())
+
+        for chunk_id in chunk_order:
+            chunk_indices = groups[chunk_id]
+            if shuffle_within_chunk:
+                random.shuffle(chunk_indices)
+
+            # Logging about chunk
+            batch_size = getattr(train_loader, 'batch_size', 1)
+            num_samples = len(chunk_indices)
+            expected_batches = (num_samples + batch_size - 1) // batch_size
+            print(f"Processing chunk {chunk_id}: {num_samples} samples -> ~{expected_batches} batches (batch_size={batch_size})")
+
+            # Choose sampler: ordered or random within chunk
+            if shuffle_within_chunk:
+                sampler = SubsetRandomSampler(chunk_indices)
+            else:
+                sampler = OrderedSampler(chunk_indices)
+
+            # Create a small DataLoader over the original dataset limited to this chunk's indices
+            chunk_loader = DataLoader(
+                orig_dataset,
+                batch_size=batch_size,
+                sampler=sampler,
+                num_workers=getattr(train_loader, 'num_workers', 0),
+                pin_memory=getattr(train_loader, 'pin_memory', False)
+            )
+
+            # Track per-chunk batches so we can print more frequent progress
+            chunk_batch_counter = 0
+            for batch_idx, (features, targets) in enumerate(chunk_loader):
+                features = features.to(device)
+                targets = targets.to(device)
+
+                predictions = model(features)
+                loss = loss_fn(predictions, targets)
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                total_loss += loss.item()
+                num_batches += 1
+                chunk_batch_counter += 1
+
+                # Print frequent progress inside the chunk (every 10 batches)
+                if chunk_batch_counter % 10 == 0:
+                    avg_loss = total_loss / num_batches
+                    print(f"  Chunk {chunk_id} progress: batch {chunk_batch_counter}/{expected_batches} (global batches {num_batches}) - avg loss {avg_loss:.4f}")
+
+                # Also preserve a coarser global checkpoint (every 100 batches)
+                if num_batches % 100 == 0:
+                    avg_loss = total_loss / num_batches
+                    print(f"  Batches {num_batches}: Loss = {avg_loss:.4f}")
+
+            # Finished processing this chunk
+            print(f"Finished chunk {chunk_id}: processed {chunk_batch_counter} batches, global batches {num_batches}")
+
+    else:
+        # Fallback: original behavior (in-memory or non-streaming)
+        for batch_idx, (features, targets) in enumerate(train_loader):
+            features = features.to(device)
+            targets = targets.to(device)
+
+            # Forward pass
+            predictions = model(features)
+            loss = loss_fn(predictions, targets)
+
+            # Backward pass
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # Update weights
+            optimizer.step()
+
+            total_loss += loss.item()
+            num_batches += 1
+
+            if (batch_idx + 1) % 100 == 0:
+                avg_loss = total_loss / num_batches
+                print(f"  Batch {batch_idx + 1}/{len(train_loader)}: Loss = {avg_loss:.4f}")
+
+    return total_loss / max(1, num_batches)
 
 
 def validate(model, val_loader, loss_fn, device):
-    """Validate the model"""
+    """Validate the model.
+
+    If `val_loader` wraps a streaming dataset, iterate chunk-by-chunk
+    (sequentially) to preserve locality and avoid repeated random chunk
+    loads during validation.
+    """
     model.eval()
     total_loss = 0.0
     num_batches = 0
-    
+
+    # Detect if val_loader.dataset is a Subset wrapping the original dataset
+    ds_wrapper = getattr(val_loader, 'dataset', None)
+    orig_dataset = getattr(ds_wrapper, 'dataset', None)
+    indices = getattr(ds_wrapper, 'indices', None)
+
     with torch.no_grad():
-        for features, targets in val_loader:
-            features = features.to(device)
-            targets = targets.to(device)
-            
-            predictions = model(features)
-            loss = loss_fn(predictions, targets)
-            
-            total_loss += loss.item()
-            num_batches += 1
-    
-    return total_loss / num_batches
+        if orig_dataset is not None and getattr(orig_dataset, 'buffer_lines', None):
+            # Chunk-aware validation: process chunks sequentially
+            buffer_lines = orig_dataset.buffer_lines
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for idx in indices:
+                chunk_id = idx // buffer_lines
+                groups[chunk_id].append(idx)
+
+            # iterate chunks in sorted order for determinism
+            for chunk_id in sorted(groups.keys()):
+                chunk_indices = groups[chunk_id]
+                print(f"Validation: processing chunk {chunk_id} ({len(chunk_indices)} samples)")
+
+                # Use ordered sampler for validation to preserve locality
+                sampler = OrderedSampler(chunk_indices)
+                chunk_loader = DataLoader(
+                    orig_dataset,
+                    batch_size=getattr(val_loader, 'batch_size', 1),
+                    sampler=sampler,
+                    num_workers=getattr(val_loader, 'num_workers', 0),
+                    pin_memory=getattr(val_loader, 'pin_memory', False)
+                )
+
+                for features, targets in chunk_loader:
+                    features = features.to(device)
+                    targets = targets.to(device)
+
+                    predictions = model(features)
+                    loss = loss_fn(predictions, targets)
+
+                    total_loss += loss.item()
+                    num_batches += 1
+
+        else:
+            # fallback to the original behavior
+            for features, targets in val_loader:
+                features = features.to(device)
+                targets = targets.to(device)
+
+                predictions = model(features)
+                loss = loss_fn(predictions, targets)
+
+                total_loss += loss.item()
+                num_batches += 1
+
+    return total_loss / max(1, num_batches)
 
 
 def train_nnue(

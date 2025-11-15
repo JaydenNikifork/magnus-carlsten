@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import chess
 from features import fen_to_features
 from collections import OrderedDict
+import time
 
 
 class LichessEvalDatasetStreaming(Dataset):
@@ -43,12 +44,13 @@ class LichessEvalDatasetStreaming(Dataset):
             print(f"  (limiting to {max_lines:,} lines)")
         if self.buffer_lines:
             print(f"  (stream buffer: {self.buffer_lines:,} lines per chunk, max_cached_chunks={self.max_cached_chunks})")
-        
+        print(f"Building streaming index for {json_file}...")
+        t0 = time.time()
         # Build index of valid positions (stores only file offsets)
         self.valid_offsets = []
         self._build_index()
         
-        print(f"Indexed {len(self.valid_offsets):,} valid positions")
+        print(f"Index built in {time.time() - t0:.1f}s; Indexed {len(self.valid_offsets):,} valid positions")
         print(f"Memory usage: ~{len(self.valid_offsets) * 8 / 1024 / 1024:.1f} MB (offsets only)")
     
     def _build_index(self):
@@ -152,7 +154,9 @@ class LichessEvalDatasetStreaming(Dataset):
             
             # Extract CP
             cp = self._extract_cp_quick(evals)
-            
+            if cp is None:
+                # defensive fallback for unexpected malformed entry
+                cp = 0
             # Convert to features
             try:
                 features = fen_to_features(fen)
@@ -187,6 +191,8 @@ class LichessEvalDatasetStreaming(Dataset):
             fen = obj['fen']
             evals = obj['evals']
             cp = self._extract_cp_quick(evals)
+            if cp is None:
+                cp = 0
             try:
                 features = fen_to_features(fen)
             except:
@@ -201,8 +207,10 @@ class LichessEvalDatasetStreaming(Dataset):
     
     def _load_chunk(self, chunk_idx):
         """Load a contiguous chunk of positions into the in-memory buffer."""
+        start_time = time.time()
         start = chunk_idx * self.buffer_lines
         end = min(start + self.buffer_lines, len(self.valid_offsets))
+        print(f"Loading chunk {chunk_idx} -> offsets [{start:,}, {end:,}) (lines={end-start})")
         items = []
         
         with open(self.json_file, 'rb') as f:
@@ -233,7 +241,7 @@ class LichessEvalDatasetStreaming(Dataset):
         # Evict oldest chunks if necessary
         while len(self._buffer) > self.max_cached_chunks:
             self._buffer.popitem(last=False)
-
+        print(f"Loaded chunk {chunk_idx} in {time.time() - start_time:.2f}s; buffer now has {len(self._buffer)} chunk(s)")
 
 class LichessEvalDataset(Dataset):
     """
