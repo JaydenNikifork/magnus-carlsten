@@ -81,6 +81,7 @@ def train_nnue(
     max_cp=1000,
     max_lines=None,
     streaming=False,
+    buffer_lines=None,
     device=None
 ):
     """
@@ -126,7 +127,8 @@ def train_nnue(
         batch_size=batch_size,
         max_cp=max_cp,
         max_lines=max_lines,
-        streaming=streaming
+        streaming=streaming,
+        buffer_lines=buffer_lines
     )
     
     # Create model
@@ -241,6 +243,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-cp", type=int, default=1000, help="Max centipawn clamp")
     parser.add_argument("--max-lines", type=int, default=None, help="Maximum number of lines to read from data file")
     parser.add_argument("--streaming", action="store_true", help="Use streaming mode (low memory, slower) instead of loading all into RAM")
+    parser.add_argument("--stream-buffer", type=int, default=None, help="(streaming) number of lines to keep in-memory as a rolling buffer (larger = more RAM, less I/O)")
     parser.add_argument("--device", default=None, help="Device (cuda/cpu)")
     
     args = parser.parse_args()
@@ -257,6 +260,7 @@ if __name__ == "__main__":
         max_cp=args.max_cp,
         max_lines=args.max_lines,
         streaming=args.streaming,
+        buffer_lines=args.stream_buffer,
         device=args.device
     )
 

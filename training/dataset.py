@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import chess
 from features import fen_to_features
+from collections import OrderedDict
 
 
 class LichessEvalDatasetStreaming(Dataset):
@@ -18,7 +19,7 @@ class LichessEvalDatasetStreaming(Dataset):
     Memory usage: ~8 bytes per position (just the offset)
     """
     
-    def __init__(self, json_file, max_cp=1000, use_depth=None, max_lines=None):
+    def __init__(self, json_file, max_cp=1000, use_depth=None, max_lines=None, buffer_lines=None, max_cached_chunks=2):
         """
         Args:
             json_file: Path to JSON lines file
@@ -31,9 +32,17 @@ class LichessEvalDatasetStreaming(Dataset):
         self.use_depth = use_depth
         self.max_lines = max_lines
         
+         # Buffering config
+        self.buffer_lines = buffer_lines  # None = no buffering
+        self.max_cached_chunks = max_cached_chunks
+        # OrderedDict used for simple LRU eviction: keys = chunk_idx -> list[(features,target), ...]
+        self._buffer = OrderedDict() if self.buffer_lines else None
+
         print(f"Building streaming index for {json_file}...")
         if max_lines:
             print(f"  (limiting to {max_lines:,} lines)")
+        if self.buffer_lines:
+            print(f"  (stream buffer: {self.buffer_lines:,} lines per chunk, max_cached_chunks={self.max_cached_chunks})")
         
         # Build index of valid positions (stores only file offsets)
         self.valid_offsets = []
@@ -125,35 +134,105 @@ class LichessEvalDatasetStreaming(Dataset):
     def __getitem__(self, idx):
         """
         Load and parse position on-demand from file.
-        Only called when this specific position is needed for training.
+        Uses chunked buffer when buffer_lines is set.
         """
-        offset = self.valid_offsets[idx]
+        # When no buffering requested, fallback to previous behavior
+        if not self.buffer_lines:
+            offset = self.valid_offsets[idx]
+            
+            # Read the line at this offset
+            with open(self.json_file, 'rb') as f:
+                f.seek(offset)
+                line = f.readline().decode('utf-8').strip()
+            
+            # Parse JSON
+            obj = json.loads(line)
+            fen = obj['fen']
+            evals = obj['evals']
+            
+            # Extract CP
+            cp = self._extract_cp_quick(evals)
+            
+            # Convert to features
+            try:
+                features = fen_to_features(fen)
+            except:
+                # Fallback to zeros if FEN is invalid
+                features = torch.zeros(768)
+            
+            # Normalize centipawn score
+            cp_clamped = max(-self.max_cp, min(self.max_cp, cp))
+            target = torch.tensor([cp_clamped / self.max_cp], dtype=torch.float32)
+            
+            return features, target
         
-        # Read the line at this offset
+        # Buffered path
+        chunk_idx = idx // self.buffer_lines
+        within_chunk_idx = idx % self.buffer_lines
+        
+        # Load chunk if necessary
+        if chunk_idx not in self._buffer:
+            self._load_chunk(chunk_idx)
+        
+        # Access from buffer
+        chunk = self._buffer.get(chunk_idx, [])
+        # Defensive: if the requested index is beyond chunk (last chunk may be smaller)
+        if within_chunk_idx >= len(chunk):
+            # Fall back to on-demand single read
+            offset = self.valid_offsets[idx]
+            with open(self.json_file, 'rb') as f:
+                f.seek(offset)
+                line = f.readline().decode('utf-8').strip()
+            obj = json.loads(line)
+            fen = obj['fen']
+            evals = obj['evals']
+            cp = self._extract_cp_quick(evals)
+            try:
+                features = fen_to_features(fen)
+            except:
+                features = torch.zeros(768)
+            cp_clamped = max(-self.max_cp, min(self.max_cp, cp))
+            target = torch.tensor([cp_clamped / self.max_cp], dtype=torch.float32)
+            return features, target
+        
+        # Move used chunk to end to mark as recently used (LRU)
+        self._buffer.move_to_end(chunk_idx)
+        return chunk[within_chunk_idx]
+    
+    def _load_chunk(self, chunk_idx):
+        """Load a contiguous chunk of positions into the in-memory buffer."""
+        start = chunk_idx * self.buffer_lines
+        end = min(start + self.buffer_lines, len(self.valid_offsets))
+        items = []
+        
         with open(self.json_file, 'rb') as f:
-            f.seek(offset)
-            line = f.readline().decode('utf-8').strip()
+            for pos in range(start, end):
+                offset = self.valid_offsets[pos]
+                f.seek(offset)
+                line = f.readline().decode('utf-8').strip()
+                try:
+                    obj = json.loads(line)
+                    fen = obj.get('fen')
+                    evals = obj.get('evals', [])
+                    cp = self._extract_cp_quick(evals)
+                    
+                    try:
+                        features = fen_to_features(fen)
+                    except:
+                        features = torch.zeros(768)
+                    
+                    cp_clamped = max(-self.max_cp, min(self.max_cp, cp))
+                    target = torch.tensor([cp_clamped / self.max_cp], dtype=torch.float32)
+                    items.append((features, target))
+                except Exception:
+                    # Skip malformed lines in chunk - keep alignment by inserting a fallback
+                    items.append((torch.zeros(768), torch.tensor([0.0], dtype=torch.float32)))
         
-        # Parse JSON
-        obj = json.loads(line)
-        fen = obj['fen']
-        evals = obj['evals']
-        
-        # Extract CP
-        cp = self._extract_cp_quick(evals)
-        
-        # Convert to features
-        try:
-            features = fen_to_features(fen)
-        except:
-            # Fallback to zeros if FEN is invalid
-            features = torch.zeros(768)
-        
-        # Normalize centipawn score
-        cp_clamped = max(-self.max_cp, min(self.max_cp, cp))
-        target = torch.tensor([cp_clamped / self.max_cp], dtype=torch.float32)
-        
-        return features, target
+        # Insert into buffer (LRU)
+        self._buffer[chunk_idx] = items
+        # Evict oldest chunks if necessary
+        while len(self._buffer) > self.max_cached_chunks:
+            self._buffer.popitem(last=False)
 
 
 class LichessEvalDataset(Dataset):
@@ -302,7 +381,7 @@ class LichessEvalDataset(Dataset):
         return features, target
 
 
-def create_dataloader(json_file, batch_size=256, shuffle=True, max_cp=1000, train_split=0.9, max_lines=None, streaming=False):
+def create_dataloader(json_file, batch_size=256, shuffle=True, max_cp=1000, train_split=0.9, max_lines=None, streaming=False, buffer_lines=None):
     """
     Create train and validation dataloaders.
     
@@ -314,6 +393,7 @@ def create_dataloader(json_file, batch_size=256, shuffle=True, max_cp=1000, trai
         train_split: Fraction of data to use for training
         max_lines: Maximum number of lines to read from file (None = read all)
         streaming: If True, use streaming mode (low memory, slower). If False, load all into memory (fast, high memory)
+        buffer_lines: If streaming, optional number of lines to cache per chunk (improves throughput at cost of RAM)
     
     Returns:
         train_loader, val_loader
@@ -321,7 +401,7 @@ def create_dataloader(json_file, batch_size=256, shuffle=True, max_cp=1000, trai
     # Choose dataset class based on streaming mode
     if streaming:
         print("Using STREAMING mode (low memory, on-demand loading)")
-        dataset = LichessEvalDatasetStreaming(json_file, max_cp=max_cp, max_lines=max_lines)
+        dataset = LichessEvalDatasetStreaming(json_file, max_cp=max_cp, max_lines=max_lines, buffer_lines=buffer_lines)
     else:
         print("Using IN-MEMORY mode (high memory, fast loading)")
         dataset = LichessEvalDataset(json_file, max_cp=max_cp, max_lines=max_lines)
