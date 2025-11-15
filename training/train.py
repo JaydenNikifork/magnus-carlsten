@@ -1,5 +1,5 @@
 """
-Training script for the NNUE model.
+Training script for the NNUE model - runs on Modal.
 """
 
 import torch
@@ -11,9 +11,27 @@ import time
 import os
 import sys
 import shutil
+import modal
 
 from nnue_model import SimpleNNUE
 from dataset import create_dataloader
+
+app = modal.App("magnus-carlsten-training")
+
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install(
+        "torch==2.1.0",
+        "tensorboard",
+        "python-chess",
+    )
+    .add_local_file("nnue_model.py", "/root/nnue_model.py")
+    .add_local_file("dataset.py", "/root/dataset.py")
+    .add_local_file("features.py", "/root/features.py")
+)
+
+training_volume = modal.Volume.from_name("training-data", create_if_missing=True)
+models_volume = modal.Volume.from_name("trained-models", create_if_missing=True)
 
 
 class OrderedSampler(torch.utils.data.Sampler):
@@ -222,9 +240,18 @@ def validate(model, val_loader, loss_fn, device):
     return total_loss / max(1, num_batches)
 
 
+@app.function(
+    image=image,
+    gpu="A100-80GB",
+    timeout=86400,
+    volumes={
+        "/data": training_volume,
+        "/models": models_volume
+    }
+)
 def train_nnue(
     data_file,
-    output_dir="models",
+    output_dir="/models",
     h1=512,
     h2=64,
     batch_size=1024,
@@ -238,11 +265,11 @@ def train_nnue(
     device=None
 ):
     """
-    Main training function.
+    Main training function running on Modal.
     
     Args:
-        data_file: Path to JSON lines file with training data
-        output_dir: Directory to save model checkpoints
+        data_file: Path to JSON lines file with training data (should be in /data volume)
+        output_dir: Directory to save model checkpoints (defaults to /models volume)
         h1: Size of first hidden layer
         h2: Size of second hidden layer
         batch_size: Training batch size
@@ -362,31 +389,18 @@ def train_nnue(
     print(f"Best validation loss: {best_val_loss:.4f}")
     print("="*60)
     
-    # Copy best model to src/ directory for deployment
-    best_model_path = os.path.join(output_dir, "nnue_best.pt")
-    src_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
-    deployment_path = os.path.join(src_dir, "model.pt")
-    
-    if os.path.exists(best_model_path):
-        # Create src directory if it doesn't exist
-        os.makedirs(src_dir, exist_ok=True)
-        
-        # Copy the best model
-        shutil.copy2(best_model_path, deployment_path)
-        print(f"\n✅ Copied best model to: {deployment_path}")
-        print(f"   Ready for deployment!")
-    else:
-        print(f"\n⚠️  Warning: Best model not found at {best_model_path}")
+    models_volume.commit()
     
     return model
 
 
-if __name__ == "__main__":
+@app.local_entrypoint()
+def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description="Train NNUE chess evaluation model")
-    parser.add_argument("data_file", help="Path to JSON lines data file")
-    parser.add_argument("--output-dir", default="models", help="Output directory")
+    parser = argparse.ArgumentParser(description="Train NNUE chess evaluation model on Modal")
+    parser.add_argument("data_file", help="Path to JSON lines data file (relative to /data volume)")
+    parser.add_argument("--output-dir", default="/models", help="Output directory")
     parser.add_argument("--h1", type=int, default=512, help="First hidden layer size")
     parser.add_argument("--h2", type=int, default=64, help="Second hidden layer size")
     parser.add_argument("--batch-size", type=int, default=1024, help="Batch size")
@@ -401,7 +415,12 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    train_nnue(
+    print("🚀 Starting training on Modal...")
+    print(f"   Data file: {args.data_file}")
+    print(f"   GPU: A100-80GB")
+    print(f"   Epochs: {args.epochs}")
+    
+    train_nnue.remote(
         data_file=args.data_file,
         output_dir=args.output_dir,
         h1=args.h1,
@@ -416,4 +435,7 @@ if __name__ == "__main__":
         buffer_lines=args.stream_buffer,
         device=args.device
     )
+    
+    print("\n✅ Training complete! Models saved to Modal volume 'trained-models'")
+
 

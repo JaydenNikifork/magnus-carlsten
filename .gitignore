@@ -1,2 +1,10 @@
-.venv/*
+.venv
 trainingData/lichess_db_eval.jsonl
+.vscode
+__pycache__
+CMakeFiles
+onnxruntime-dist
+build
+.cache
+Makefile
+compile_commands.json
