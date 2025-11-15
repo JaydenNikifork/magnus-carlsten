@@ -9,13 +9,25 @@ import chess
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'training'))
 from nnue_model import SimpleNNUE
 from features import board_to_features
+from .stockfish import StockfishEvaluator
+
+USE_STOCKFISH = True 
 
 model = None
 max_cp = None
 engine_process = None
+stockfish_evaluator = None
 
 def load_model():
-    global model, max_cp
+    global model, max_cp, stockfish_evaluator
+    
+    if USE_STOCKFISH:
+        print("=" * 60)
+        print("🐟 Using Stockfish for evaluation")
+        print("=" * 60)
+        stockfish_evaluator = StockfishEvaluator(depth=15)
+        return
+    
     model_path = os.path.join(os.path.dirname(__file__), 'model.pt')
     print(f"Loading model from: {model_path}")
     checkpoint = torch.load(model_path, map_location='cpu')
@@ -35,7 +47,11 @@ def load_model():
     print()
 
 def evaluate_position(board: chess.Board) -> int:
-    global model, max_cp
+    global model, max_cp, stockfish_evaluator
+    
+    if USE_STOCKFISH:
+        return stockfish_evaluator.evaluate(board)
+    
     features = board_to_features(board).unsqueeze(0)
     with torch.no_grad():
         normalized = model(features).item()
