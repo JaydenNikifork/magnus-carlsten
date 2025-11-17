@@ -25,9 +25,9 @@ image = (
         "tensorboard",
         "python-chess",
     )
-    .add_local_file("nnue_model.py", "/root/nnue_model.py")
-    .add_local_file("dataset.py", "/root/dataset.py")
-    .add_local_file("features.py", "/root/features.py")
+    .add_local_file("training/nnue_model.py", "/root/nnue_model.py")
+    .add_local_file("training/dataset.py", "/root/dataset.py")
+    .add_local_file("training/features.py", "/root/features.py")
 )
 
 training_volume = modal.Volume.from_name("training-data", create_if_missing=True)
@@ -395,45 +395,60 @@ def train_nnue(
 
 
 @app.local_entrypoint()
-def main():
-    import argparse
+def main(
+    data_file: str,
+    output_dir: str = "/models",
+    h1: int = 512,
+    h2: int = 64,
+    batch_size: int = 1024,
+    epochs: int = 15,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    max_cp: int = 1000,
+    max_lines: int = None,
+    streaming: bool = False,
+    stream_buffer: int = None,
+    device: str = None
+):
+    """
+    Train NNUE chess evaluation model on Modal.
     
-    parser = argparse.ArgumentParser(description="Train NNUE chess evaluation model on Modal")
-    parser.add_argument("data_file", help="Path to JSON lines data file (relative to /data volume)")
-    parser.add_argument("--output-dir", default="/models", help="Output directory")
-    parser.add_argument("--h1", type=int, default=512, help="First hidden layer size")
-    parser.add_argument("--h2", type=int, default=64, help="Second hidden layer size")
-    parser.add_argument("--batch-size", type=int, default=1024, help="Batch size")
-    parser.add_argument("--epochs", type=int, default=15, help="Number of epochs")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--max-cp", type=int, default=1000, help="Max centipawn clamp")
-    parser.add_argument("--max-lines", type=int, default=None, help="Maximum number of lines to read from data file")
-    parser.add_argument("--streaming", action="store_true", help="Use streaming mode (low memory, slower) instead of loading all into RAM")
-    parser.add_argument("--stream-buffer", type=int, default=None, help="(streaming) number of lines to keep in-memory as a rolling buffer (larger = more RAM, less I/O)")
-    parser.add_argument("--device", default=None, help="Device (cuda/cpu)")
-    
-    args = parser.parse_args()
+    Args:
+        data_file: Path to JSON lines data file (relative to /data volume)
+        output_dir: Output directory (default: /models)
+        h1: First hidden layer size (default: 512)
+        h2: Second hidden layer size (default: 64)
+        batch_size: Batch size (default: 1024)
+        epochs: Number of epochs (default: 15)
+        lr: Learning rate (default: 1e-3)
+        weight_decay: Weight decay (default: 1e-4)
+        max_cp: Max centipawn clamp (default: 1000)
+        max_lines: Maximum number of lines to read from data file
+        streaming: Use streaming mode (low memory, slower)
+        stream_buffer: Number of lines to keep in-memory as rolling buffer
+        device: Device (cuda/cpu)
+    """
     
     print("🚀 Starting training on Modal...")
-    print(f"   Data file: {args.data_file}")
+    print(f"   Data file: {data_file}")
     print(f"   GPU: A100-80GB")
-    print(f"   Epochs: {args.epochs}")
+    print(f"   Epochs: {epochs}")
+    print(f"   Batch size: {batch_size}")
     
     train_nnue.remote(
-        data_file=args.data_file,
-        output_dir=args.output_dir,
-        h1=args.h1,
-        h2=args.h2,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        max_cp=args.max_cp,
-        max_lines=args.max_lines,
-        streaming=args.streaming,
-        buffer_lines=args.stream_buffer,
-        device=args.device
+        data_file=data_file,
+        output_dir=output_dir,
+        h1=h1,
+        h2=h2,
+        batch_size=batch_size,
+        epochs=epochs,
+        lr=lr,
+        weight_decay=weight_decay,
+        max_cp=max_cp,
+        max_lines=max_lines,
+        streaming=streaming,
+        buffer_lines=stream_buffer,
+        device=device
     )
     
     print("\n✅ Training complete! Models saved to Modal volume 'trained-models'")

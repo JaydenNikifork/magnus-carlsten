@@ -3,9 +3,7 @@ project(ChessEngine CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Original engine
-add_executable(chess_engine chess_engine.cpp)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ONNX Runtime engine
 if(DEFINED ENV{ONNXRUNTIME_PATH})
@@ -15,7 +13,8 @@ if(DEFINED ENV{ONNXRUNTIME_PATH})
     
     # Create executable
     add_executable(chess_engine_onnx 
-        chess_engine_onnx.cpp
+        chess_engine.cpp
+        nnue_evaluator.cpp
     )
     
     # Include directories

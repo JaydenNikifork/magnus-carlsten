@@ -62,6 +62,70 @@ def export_to_onnx():
     print(f"  Size: {os.path.getsize(output_path) / 1024:.1f} KB")
     print()
     
+    # Export partial ONNX model (layers 2-3 only) for GPU acceleration
+    print("Exporting partial ONNX model (layers 2-3) for GPU acceleration...")
+    partial_output_path = os.path.join(os.path.dirname(__file__), 'model_partial.onnx')
+    
+    # Create a partial model that takes layer1_output as input
+    class PartialNNUE(torch.nn.Module):
+        def __init__(self, fc2, fc3):
+            super().__init__()
+            self.fc2 = fc2
+            self.fc3 = fc3
+        
+        def forward(self, layer1_output):
+            h2 = torch.relu(self.fc2(layer1_output))
+            output = self.fc3(h2)
+            return output
+    
+    partial_model = PartialNNUE(model.fc2, model.fc3)
+    partial_model.eval()
+    
+    dummy_layer1_input = torch.zeros(1, h1, dtype=torch.float32)
+    
+    with torch.no_grad():
+        torch.onnx.export(
+            partial_model,
+            dummy_layer1_input,
+            partial_output_path,
+            export_params=True,
+            opset_version=14,
+            do_constant_folding=True,
+            input_names=['layer1_output'],
+            output_names=['output'],
+            dynamic_axes={
+                'layer1_output': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            },
+            dynamo=False
+        )
+    
+    print(f"✓ Partial ONNX model exported")
+    print(f"  File: {partial_output_path}")
+    print(f"  Size: {os.path.getsize(partial_output_path) / 1024:.1f} KB")
+    print(f"  Input: layer1_output [{h1}]")
+    print(f"  Output: evaluation [1]")
+    print()
+    
+    # Export first layer weights for incremental NNUE updates
+    print("Exporting first layer weights for incremental updates...")
+    weights_path = os.path.join(os.path.dirname(__file__), 'layer1_weights.bin')
+    bias_path = os.path.join(os.path.dirname(__file__), 'layer1_bias.bin')
+    
+    with torch.no_grad():
+        # fc1: [h1, 768] -> need to transpose to [768, h1] for efficient column access
+        w1 = model.fc1.weight.numpy().T  # [768, h1]
+        b1 = model.fc1.bias.numpy()      # [h1]
+        
+        # Save as binary for fast loading in C++
+        w1.astype('float32').tofile(weights_path)
+        b1.astype('float32').tofile(bias_path)
+    
+    print(f"✓ Layer 1 weights exported for incremental updates")
+    print(f"  Layer 1: [768, {h1}] + bias [{h1}]")
+    print(f"  Note: Layers 2-3 handled by ONNX Runtime (GPU accelerated)")
+    print()
+    
     # Validate with ONNX Runtime
     try:
         import onnxruntime as ort

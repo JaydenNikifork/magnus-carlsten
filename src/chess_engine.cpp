@@ -2,106 +2,57 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <limits>
 #include <sstream>
-#include <map>
+#include <chrono>
+#include "chess.hpp"
+#include "nnue_evaluator.hpp"
 
-const int MAX_DEPTH = 4;
+const int MAX_DEPTH = 2;
 const int INF = 1000000;
 const int MATE_SCORE = 100000;
 
-struct Move {
-    std::string uci;
-    int score;
-};
-
-struct Position {
-    std::string fen;
-    std::vector<std::string> legal_moves;
-    bool is_terminal;
-    int terminal_score;
-};
-
 class ChessEngine {
 private:
-    int evaluatePosition(const std::string& fen) {
-        std::cout << "EVAL " << fen << std::endl;
-        std::cout.flush();
+    NNUEEvaluator evaluator;
+    
+    int alphaBeta(chess::Board& board, int depth, int alpha, int beta, bool maximizing, int& nodes_evaluated) {
+        auto game_over = board.isGameOver();
         
-        std::string response;
-        std::getline(std::cin, response);
+        if (depth == 0 || game_over.first != chess::GameResultReason::NONE) {
+            nodes_evaluated++;
+            
+            if (game_over.first != chess::GameResultReason::NONE) {
+                auto result = game_over.second;
+                if (result == chess::GameResult::WIN) {
+                    return board.sideToMove() == chess::Color::WHITE ? MATE_SCORE : -MATE_SCORE;
+                } else if (result == chess::GameResult::LOSE) {
+                    return board.sideToMove() == chess::Color::WHITE ? -MATE_SCORE : MATE_SCORE;
+                } else {
+                    return 0;
+                }
+            }
+            
+            int score = evaluator.evaluate();
+            return board.sideToMove() == chess::Color::WHITE ? score : -score;
+        }
         
-        try {
-            return std::stoi(response);
-        } catch (...) {
-            std::cerr << "Error parsing eval response: " << response << std::endl;
+        chess::Movelist moves;
+        chess::movegen::legalmoves(moves, board);
+        
+        if (moves.empty()) {
+            nodes_evaluated++;
             return 0;
-        }
-    }
-
-    Position getPosition(const std::string& fen) {
-        std::cout << "POSITION " << fen << std::endl;
-        std::cout.flush();
-        
-        Position pos;
-        pos.fen = fen;
-        
-        std::string response;
-        std::getline(std::cin, response);
-        
-        std::istringstream iss(response);
-        std::string status;
-        iss >> status;
-        
-        if (status == "TERMINAL") {
-            pos.is_terminal = true;
-            std::string result;
-            iss >> result;
-            if (result == "1-0") pos.terminal_score = MATE_SCORE;
-            else if (result == "0-1") pos.terminal_score = -MATE_SCORE;
-            else pos.terminal_score = 0;
-        } else if (status == "NORMAL") {
-            pos.is_terminal = false;
-            pos.terminal_score = 0;
-            std::string move;
-            while (iss >> move) {
-                pos.legal_moves.push_back(move);
-            }
-        }
-        
-        return pos;
-    }
-
-    std::string makeMove(const std::string& fen, const std::string& move) {
-        std::cout << "MAKEMOVE " << fen << " " << move << std::endl;
-        std::cout.flush();
-        
-        std::string new_fen;
-        std::getline(std::cin, new_fen);
-        return new_fen;
-    }
-
-    int alphaBeta(const std::string& fen, int depth, int alpha, int beta, bool maximizing, int& nodes_evaluated) {
-        Position pos = getPosition(fen);
-        
-        if (depth == 0 || pos.is_terminal) {
-            nodes_evaluated++;
-            if (pos.is_terminal) {
-                return pos.terminal_score;
-            }
-            return evaluatePosition(fen);
-        }
-        
-        if (pos.legal_moves.empty()) {
-            nodes_evaluated++;
-            return pos.terminal_score;
         }
         
         if (maximizing) {
             int maxEval = -INF;
-            for (const auto& move : pos.legal_moves) {
-                std::string new_fen = makeMove(fen, move);
-                int eval = alphaBeta(new_fen, depth - 1, alpha, beta, false, nodes_evaluated);
+            for (const auto& move : moves) {
+                evaluator.move(move, board);
+                board.makeMove(move);
+                int eval = alphaBeta(board, depth - 1, alpha, beta, false, nodes_evaluated);
+                board.unmakeMove(move);
+                evaluator.undo();
+                
                 maxEval = std::max(maxEval, eval);
                 alpha = std::max(alpha, eval);
                 if (beta <= alpha) {
@@ -111,9 +62,13 @@ private:
             return maxEval;
         } else {
             int minEval = INF;
-            for (const auto& move : pos.legal_moves) {
-                std::string new_fen = makeMove(fen, move);
-                int eval = alphaBeta(new_fen, depth - 1, alpha, beta, true, nodes_evaluated);
+            for (const auto& move : moves) {
+                evaluator.move(move, board);
+                board.makeMove(move);
+                int eval = alphaBeta(board, depth - 1, alpha, beta, true, nodes_evaluated);
+                board.unmakeMove(move);
+                evaluator.undo();
+                
                 minEval = std::min(minEval, eval);
                 beta = std::min(beta, eval);
                 if (beta <= alpha) {
@@ -126,57 +81,104 @@ private:
 
 public:
     ChessEngine() {}
+    
+    bool initialize(const std::string& model_path, const std::string& config_path) {
+        return evaluator.loadModel(model_path, config_path);
+    }
 
-    Move findBestMove(const std::string& fen, int max_depth = MAX_DEPTH) {
+    std::pair<std::string, int> findBestMove(const std::string& fen, int max_depth = MAX_DEPTH) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
         std::cerr << "=== Starting search ===" << std::endl;
         std::cerr << "Position: " << fen.substr(0, 60) << "..." << std::endl;
         std::cerr << "Depth: " << max_depth << std::endl;
         
-        Position pos = getPosition(fen);
+        chess::Board board(fen);
+        evaluator.reset(board);
         
-        if (pos.legal_moves.empty()) {
+        chess::Movelist moves;
+        chess::movegen::legalmoves(moves, board);
+        
+        if (moves.empty()) {
             std::cerr << "No legal moves available!" << std::endl;
             return {"", 0};
         }
         
-        std::cerr << "Legal moves: " << pos.legal_moves.size() << std::endl;
+        std::cerr << "Legal moves: " << moves.size() << std::endl;
         
-        Move best_move = {pos.legal_moves[0], -INF};
+        std::string best_move_uci;
+        int best_score = -INF;
         int move_count = 0;
         int total_nodes = 0;
         
-        for (const auto& move : pos.legal_moves) {
-            std::string new_fen = makeMove(fen, move);
+        evaluator.resetEvalCount();
+        
+        for (const auto& move : moves) {
+            evaluator.move(move, board);
+            board.makeMove(move);
             int nodes_for_move = 0;
-            int score = alphaBeta(new_fen, max_depth - 1, -INF, INF, false, nodes_for_move);
+            int score = alphaBeta(board, max_depth - 1, -INF, INF, false, nodes_for_move);
+            board.unmakeMove(move);
+            evaluator.undo();
+            
             move_count++;
             total_nodes += nodes_for_move;
             
-            std::cerr << "  Move " << move_count << "/" << pos.legal_moves.size() 
-                      << ": " << move << " -> Score: " << score
+            std::string move_uci = chess::uci::moveToUci(move);
+            
+            std::cerr << "  Move " << move_count << "/" << moves.size() 
+                      << ": " << move_uci << " -> Score: " << score
                       << " (nodes: " << nodes_for_move << ")";
             
-            if (score > best_move.score) {
-                best_move = {move, score};
+            if (score > best_score) {
+                best_score = score;
+                best_move_uci = move_uci;
                 std::cerr << " (NEW BEST!)";
             }
             std::cerr << std::endl;
         }
         
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        
         std::cerr << "=== Search complete ===" << std::endl;
-        std::cerr << "Best move: " << best_move.uci << std::endl;
-        std::cerr << "Best score: " << best_move.score << " centipawns" << std::endl;
+        std::cerr << "Best move: " << best_move_uci << std::endl;
+        std::cerr << "Best score: " << best_score << " centipawns" << std::endl;
         std::cerr << "Total nodes evaluated: " << total_nodes << std::endl;
+        std::cerr << "Evaluations: " << evaluator.getEvalCount() << std::endl;
+        std::cerr << "Time: " << duration.count() << "ms" << std::endl;
+        std::cerr << "Nodes/sec: " << (total_nodes * 1000 / std::max(1LL, duration.count())) << std::endl;
         std::cerr << std::endl;
         
-        return best_move;
+        return {best_move_uci, best_score};
     }
 };
 
-int main() {
+int main(int argc, char* argv[]) {
     ChessEngine engine;
     
-    std::cerr << "C++ Engine ready" << std::endl;
+    std::string model_path = "model.onnx";
+    std::string config_path = "model_config.txt";
+    
+    if (argc > 1) {
+        model_path = argv[1];
+    }
+    if (argc > 2) {
+        config_path = argv[2];
+    }
+    
+    std::cerr << "=========================================" << std::endl;
+    std::cerr << "Chess Engine with ONNX Runtime" << std::endl;
+    std::cerr << "High Performance, Easy Setup" << std::endl;
+    std::cerr << "=========================================" << std::endl;
+    std::cerr << std::endl;
+    
+    if (!engine.initialize(model_path, config_path)) {
+        std::cerr << "Failed to initialize engine" << std::endl;
+        return 1;
+    }
+    
+    std::cerr << "Engine ready (ONNX Runtime - optimized)" << std::endl;
     std::cout << "READY" << std::endl;
     std::cout.flush();
     
@@ -197,13 +199,16 @@ int main() {
             
             int depth = MAX_DEPTH;
             
-            Move best = engine.findBestMove(fen, depth);
-            std::cout << "BESTMOVE " << best.uci << " " << best.score << std::endl;
+            auto [best_move, score] = engine.findBestMove(fen, depth);
+            std::cout << "BESTMOVE " << best_move << " " << score << std::endl;
             std::cout.flush();
+            
         } else if (command == "QUIT") {
             break;
         }
     }
+    
+    std::cerr << "Shutting down gracefully..." << std::endl;
     
     return 0;
 }

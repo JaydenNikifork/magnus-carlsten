@@ -117,19 +117,6 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named chess_engine
-
-# Build rule for target.
-chess_engine: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 chess_engine
-.PHONY : chess_engine
-
-# fast build rule for target.
-chess_engine/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine.dir/build.make CMakeFiles/chess_engine.dir/build
-.PHONY : chess_engine/fast
-
-#=============================================================================
 # Target rules for targets named chess_engine_onnx
 
 # Build rule for target.
@@ -147,7 +134,7 @@ chess_engine.o: chess_engine.cpp.o
 
 # target to build an object file
 chess_engine.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine.dir/build.make CMakeFiles/chess_engine.dir/chess_engine.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine.cpp.o
 .PHONY : chess_engine.cpp.o
 
 chess_engine.i: chess_engine.cpp.i
@@ -155,7 +142,7 @@ chess_engine.i: chess_engine.cpp.i
 
 # target to preprocess a source file
 chess_engine.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine.dir/build.make CMakeFiles/chess_engine.dir/chess_engine.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine.cpp.i
 .PHONY : chess_engine.cpp.i
 
 chess_engine.s: chess_engine.cpp.s
@@ -163,32 +150,32 @@ chess_engine.s: chess_engine.cpp.s
 
 # target to generate assembly for a file
 chess_engine.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine.dir/build.make CMakeFiles/chess_engine.dir/chess_engine.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine.cpp.s
 .PHONY : chess_engine.cpp.s
 
-chess_engine_onnx.o: chess_engine_onnx.cpp.o
-.PHONY : chess_engine_onnx.o
+nnue_evaluator.o: nnue_evaluator.cpp.o
+.PHONY : nnue_evaluator.o
 
 # target to build an object file
-chess_engine_onnx.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine_onnx.cpp.o
-.PHONY : chess_engine_onnx.cpp.o
+nnue_evaluator.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/nnue_evaluator.cpp.o
+.PHONY : nnue_evaluator.cpp.o
 
-chess_engine_onnx.i: chess_engine_onnx.cpp.i
-.PHONY : chess_engine_onnx.i
+nnue_evaluator.i: nnue_evaluator.cpp.i
+.PHONY : nnue_evaluator.i
 
 # target to preprocess a source file
-chess_engine_onnx.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine_onnx.cpp.i
-.PHONY : chess_engine_onnx.cpp.i
+nnue_evaluator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/nnue_evaluator.cpp.i
+.PHONY : nnue_evaluator.cpp.i
 
-chess_engine_onnx.s: chess_engine_onnx.cpp.s
-.PHONY : chess_engine_onnx.s
+nnue_evaluator.s: nnue_evaluator.cpp.s
+.PHONY : nnue_evaluator.s
 
 # target to generate assembly for a file
-chess_engine_onnx.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/chess_engine_onnx.cpp.s
-.PHONY : chess_engine_onnx.cpp.s
+nnue_evaluator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/chess_engine_onnx.dir/build.make CMakeFiles/chess_engine_onnx.dir/nnue_evaluator.cpp.s
+.PHONY : nnue_evaluator.cpp.s
 
 # Help Target
 help:
@@ -198,14 +185,13 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
-	@echo "... chess_engine"
 	@echo "... chess_engine_onnx"
 	@echo "... chess_engine.o"
 	@echo "... chess_engine.i"
 	@echo "... chess_engine.s"
-	@echo "... chess_engine_onnx.o"
-	@echo "... chess_engine_onnx.i"
-	@echo "... chess_engine_onnx.s"
+	@echo "... nnue_evaluator.o"
+	@echo "... nnue_evaluator.i"
+	@echo "... nnue_evaluator.s"
 .PHONY : help
 
 

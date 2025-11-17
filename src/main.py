@@ -49,7 +49,11 @@ def start_cpp_engine():
     
     ready = engine_process.stdout.readline().strip()
     if ready != "READY":
-        raise RuntimeError(f"Engine failed to start. Got: {ready}")
+        stderr_output = engine_process.stderr.read()
+        raise RuntimeError(
+            f"Engine failed to start. Got: {ready}\n"
+            f"Error output: {stderr_output}"
+        )
     
     print("✓ ONNX Runtime engine started successfully!")
     print()
